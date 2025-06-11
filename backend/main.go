@@ -5,79 +5,34 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
-// Cache to store API responses
-type Cache struct {
-	sync.RWMutex
-	items map[string]CacheItem
-}
-
-type CacheItem struct {
-	Value      interface{}
-	Expiration time.Time
-}
-
-// NewCache creates a new cache instance
-func NewCache() *Cache {
-	return &Cache{
-		items: make(map[string]CacheItem),
-	}
-}
-
-// Set adds an item to the cache
-func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
-	c.Lock()
-	defer c.Unlock()
-	c.items[key] = CacheItem{
-		Value:      value,
-		Expiration: time.Now().Add(expiration),
-	}
-}
-
-// Get retrieves an item from the cache
-func (c *Cache) Get(key string) (interface{}, bool) {
-	c.RLock()
-	defer c.RUnlock()
-	item, found := c.items[key]
-	if !found {
-		return nil, false
-	}
-	
-	if time.Now().After(item.Expiration) {
-		delete(c.items, key)
-		return nil, false
-	}
-	
-	return item.Value, true
-}
-
-// Global cache instance
-var priceCache = NewCache()
-
 // Default crypto coins to use
-var defaultCoins = []string{"bitcoin", "ethereum", "ripple", "solana", "cardano"}
+var defaultCoins = []string{"bitcoin", "ethereum", "ripple", "cardano", "solana"}
 
-// Main function to start the server
 func main() {
-	// Register API routes
-	http.HandleFunc("/api/chart/", handleChart)
-	http.HandleFunc("/api/prices/", handlePrices)
-	http.HandleFunc("/api/coins", handleCoins)
-	http.HandleFunc("/api/stats/", handleStats)
+	// Create a new HTTP server mux
+	mux := http.NewServeMux()
 	
-	// Add CORS middleware
-	http.ListenAndServe(":8080", corsMiddleware(http.DefaultServeMux))
+	// Register handlers with CORS middleware
+	mux.HandleFunc("/api/chart/", corsMiddleware(handleChart))
+	mux.HandleFunc("/api/prices/", corsMiddleware(handlePrices))
+	mux.HandleFunc("/api/coins", corsMiddleware(handleCoins))
+	mux.HandleFunc("/api/stats/", corsMiddleware(handleStats))
+	
+	// Start the server
+	fmt.Println("Server starting on :8080")
+	http.ListenAndServe(":8080", mux)
 }
 
 // CORS middleware handler
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
@@ -85,45 +40,60 @@ func corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		
-		next.ServeHTTP(w, r)
-	})
+		// Call the next handler
+		next(w, r)
+	}
 }
 
 // Chart API handler
 func handleChart(w http.ResponseWriter, r *http.Request) {
-	symbol := strings.TrimPrefix(r.URL.Path, "/api/chart/")
-	if symbol == "" {
-		http.Error(w, "Missing symbol", http.StatusBadRequest)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	
-	img, err := FetchAndRenderChart(symbol)
+	// Extract symbol from path
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 4 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	symbol := pathParts[3]
+	
+	// Fetch and render chart
+	chartBytes, err := FetchAndRenderChart(symbol)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: %v", err), http.StatusInternalServerError)
 		return
 	}
 	
+	// Set content type and return chart image
 	w.Header().Set("Content-Type", "image/png")
-	w.Write(img)
+	w.Write(chartBytes)
 }
 
 // Prices API handler
 func handlePrices(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/prices/")
-	parts := strings.Split(path, "/")
-	
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "Missing symbol", http.StatusBadRequest)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	
-	symbol := parts[0]
+	// Extract symbol and optional timeframe from path
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 4 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	
+	symbol := pathParts[3]
+	
 	var prices []float64
 	var err error
 	
-	if len(parts) > 1 && parts[1] != "" {
-		// Has timeframe specified
-		timeframe := parts[1]
+	// Check if timeframe is provided
+	if len(pathParts) >= 5 && pathParts[4] != "" {
+		timeframe := pathParts[4]
 		days := convertTimeframeToDays(timeframe)
 		prices, err = fetchPricesWithTimeframe(symbol, days)
 	} else {
@@ -131,12 +101,14 @@ func handlePrices(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: %v", err), http.StatusInternalServerError)
 		return
 	}
 	
+	// Return prices as JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"symbol": symbol,
 		"prices": prices,
 	})
 }
@@ -145,7 +117,7 @@ func handlePrices(w http.ResponseWriter, r *http.Request) {
 func convertTimeframeToDays(timeframe string) string {
 	switch timeframe {
 	case "1h":
-		return "1"
+		return "0.04" // ~1 hour in days
 	case "1d":
 		return "1"
 	case "7d":
@@ -157,23 +129,27 @@ func convertTimeframeToDays(timeframe string) string {
 	case "1y":
 		return "365"
 	default:
-		return "1" // Default to 1 day
+		return "1" // default to 1 day
 	}
 }
 
 // Coins API handler
 func handleCoins(w http.ResponseWriter, r *http.Request) {
-	coinsList := make([]map[string]string, 0, len(defaultCoins))
-	
-	for _, coinID := range defaultCoins {
-		coinInfo := map[string]string{
-			"id":     coinID,
-			"name":   getCoinName(coinID),
-			"symbol": getCoinSymbol(coinID),
-		}
-		coinsList = append(coinsList, coinInfo)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 	
+	coinsList := make([]map[string]string, len(defaultCoins))
+	for i, coinId := range defaultCoins {
+		coinsList[i] = map[string]string{
+			"id": coinId,
+			"name": getCoinName(coinId),
+			"symbol": getCoinSymbol(coinId),
+		}
+	}
+	
+	// Return coins as JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"coins": coinsList,
@@ -182,20 +158,30 @@ func handleCoins(w http.ResponseWriter, r *http.Request) {
 
 // Stats API handler
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	symbol := strings.TrimPrefix(r.URL.Path, "/api/stats/")
-	if symbol == "" {
-		http.Error(w, "Missing symbol", http.StatusBadRequest)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	
+	// Extract symbol from path
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 4 {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	symbol := pathParts[3]
+	
+	// Fetch stats
 	stats, err := fetchCoinStats(symbol)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error: %v", err), http.StatusInternalServerError)
 		return
 	}
 	
+	// Return stats as JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"symbol": symbol,
 		"stats": stats,
 	})
 }
@@ -203,13 +189,13 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 // Helper function to get coin name
 func getCoinName(id string) string {
 	names := map[string]string{
-		"bitcoin":   "Bitcoin",
-		"ethereum":  "Ethereum",
-		"ripple":    "XRP",
-		"cardano":   "Cardano",
-		"solana":    "Solana",
-		"dogecoin":  "Dogecoin",
-		"polkadot":  "Polkadot",
+		"bitcoin": "Bitcoin",
+		"ethereum": "Ethereum",
+		"ripple": "XRP",
+		"cardano": "Cardano",
+		"solana": "Solana",
+		"dogecoin": "Dogecoin",
+		"polkadot": "Polkadot",
 	}
 	
 	if name, ok := names[id]; ok {
@@ -221,19 +207,19 @@ func getCoinName(id string) string {
 // Helper function to get coin symbol
 func getCoinSymbol(id string) string {
 	symbols := map[string]string{
-		"bitcoin":   "BTC",
-		"ethereum":  "ETH",
-		"ripple":    "XRP",
-		"cardano":   "ADA",
-		"solana":    "SOL",
-		"dogecoin":  "DOGE",
-		"polkadot":  "DOT",
+		"bitcoin": "BTC",
+		"ethereum": "ETH",
+		"ripple": "XRP",
+		"cardano": "ADA",
+		"solana": "SOL",
+		"dogecoin": "DOGE",
+		"polkadot": "DOT",
 	}
 	
 	if symbol, ok := symbols[id]; ok {
 		return symbol
 	}
-	return id
+	return strings.ToUpper(id)
 }
 
 func FetchAndRenderChart(symbol string) ([]byte, error) {

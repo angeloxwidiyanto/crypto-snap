@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,39 +19,52 @@ import (
 
 const cacheExpiration = 5 * time.Minute
 
-// Cache is a simple cache implementation
+// Cache to store API responses
 type Cache struct {
-	data map[string]interface{}
-	mu   sync.RWMutex
+	sync.RWMutex
+	items map[string]CacheItem
 }
 
-// NewCache returns a new cache instance
+type CacheItem struct {
+	Value      interface{}
+	Expiration time.Time
+}
+
+// NewCache creates a new cache instance
 func NewCache() *Cache {
 	return &Cache{
-		data: make(map[string]interface{}),
+		items: make(map[string]CacheItem),
 	}
 }
 
-// Get returns the value for the given key if it exists
-func (c *Cache) Get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	value, found := c.data[key]
-	return value, found
-}
-
-// Set sets the value for the given key
+// Set adds an item to the cache
 func (c *Cache) Set(key string, value interface{}, expiration time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.data[key] = value
-	time.AfterFunc(expiration, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		delete(c.data, key)
-	})
+	c.Lock()
+	defer c.Unlock()
+	c.items[key] = CacheItem{
+		Value:      value,
+		Expiration: time.Now().Add(expiration),
+	}
 }
 
+// Get retrieves an item from the cache
+func (c *Cache) Get(key string) (interface{}, bool) {
+	c.RLock()
+	defer c.RUnlock()
+	item, found := c.items[key]
+	if !found {
+		return nil, false
+	}
+	
+	if time.Now().After(item.Expiration) {
+		delete(c.items, key)
+		return nil, false
+	}
+	
+	return item.Value, true
+}
+
+// Global cache instance
 var priceCache = NewCache()
 
 // FetchAndRenderChart fetches market data and returns a PNG chart bytes
@@ -59,63 +73,68 @@ func FetchAndRenderChart(symbol string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(prices) == 0 {
-		return nil, errors.New("no data")
-	}
-
+	
+	// Create a new plot
 	p := plot.New()
-	p.Title.Text = fmt.Sprintf("%s Price", symbol)
+	
+	p.Title.Text = fmt.Sprintf("%s Price (Last 24h)", strings.ToUpper(symbol))
 	p.X.Label.Text = "Time"
-	p.Y.Label.Text = "USD"
-
+	p.Y.Label.Text = "Price (USD)"
+	
+	// Create points for the line
 	pts := make(plotter.XYs, len(prices))
-	for i, pt := range prices {
+	for i, price := range prices {
 		pts[i].X = float64(i)
-		pts[i].Y = pt
+		pts[i].Y = price
 	}
+	
+	// Add a line plotter
 	line, err := plotter.NewLine(pts)
 	if err != nil {
 		return nil, err
 	}
-	line.Color = color.RGBA{R: 0, G: 128, B: 255, A: 255}
+	line.Color = color.RGBA{R: 31, G: 174, B: 233, A: 255}
+	line.Width = vg.Points(2)
+	
 	p.Add(line)
-
-	buf := bytes.NewBuffer(nil)
-	if err := p.Save(6*vg.Inch, 3*vg.Inch, buf); err != nil {
+	p.Legend.Add("Price", line)
+	
+	// Save to a buffer
+	var buf bytes.Buffer
+	wt, err := p.WriterTo(400, 200, "png")
+	if err != nil {
 		return nil, err
 	}
+	_, err = wt.WriteTo(&buf)
+	if err != nil {
+		return nil, err
+	}
+	
 	return buf.Bytes(), nil
 }
 
 // fetchPrices fetches last 24h data from CoinGecko
 func fetchPrices(symbol string) ([]float64, error) {
-	// Check cache first
-	cacheKey := symbol + "_1d"
-	if cachedData, found := priceCache.Get(cacheKey); found {
-		return cachedData.([]float64), nil
-	}
-
-	// If not in cache, fetch from API
-	prices, err := fetchPricesWithTimeframe(symbol, "1")
-	if err != nil {
-		return nil, err
-	}
-	
-	// Cache the result
-	priceCache.Set(cacheKey, prices, cacheExpiration)
-	
-	return prices, nil
+	return fetchPricesWithTimeframe(symbol, "1")
 }
 
 // fetchPricesWithTimeframe fetches price data from CoinGecko with specified timeframe
 func fetchPricesWithTimeframe(symbol string, days string) ([]float64, error) {
 	// Check cache first
-	cacheKey := fmt.Sprintf("%s_%sd", symbol, days)
-	if cachedData, found := priceCache.Get(cacheKey); found {
-		return cachedData.([]float64), nil
+	cacheKey := fmt.Sprintf("prices_%s_%s", symbol, days)
+	if cached, found := priceCache.Get(cacheKey); found {
+		return cached.([]float64), nil
 	}
 	
-	url := fmt.Sprintf("https://api.coingecko.com/api/v3/coins/%s/market_chart?vs_currency=usd&days=%s", symbol, days)
+	// Normalize symbol for CoinGecko API
+	symbol = strings.ToLower(symbol)
+	
+	// Fetch from CoinGecko
+	url := fmt.Sprintf(
+		"https://api.coingecko.com/api/v3/coins/%s/market_chart?vs_currency=usd&days=%s",
+		symbol, days,
+	)
+	
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -123,7 +142,12 @@ func fetchPricesWithTimeframe(symbol string, days string) ([]float64, error) {
 	defer resp.Body.Close()
 	
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status: %s", resp.Status)
+		return nil, fmt.Errorf("API error: %s", resp.Status)
+	}
+	
+	// Parse response
+	var data struct {
+		Prices [][]float64 `json:"prices"`
 	}
 	
 	body, err := ioutil.ReadAll(resp.Body)
@@ -131,16 +155,21 @@ func fetchPricesWithTimeframe(symbol string, days string) ([]float64, error) {
 		return nil, err
 	}
 	
-	var result struct {
-		Prices [][]float64 `json:"prices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	err = json.Unmarshal(body, &data)
+	if err != nil {
 		return nil, err
 	}
 	
-	prices := make([]float64, len(result.Prices))
-	for i, pair := range result.Prices {
-		prices[i] = pair[1]
+	if len(data.Prices) == 0 {
+		return nil, errors.New("no price data available")
+	}
+	
+	// Extract just the prices (second value in each pair)
+	prices := make([]float64, len(data.Prices))
+	for i, pair := range data.Prices {
+		if len(pair) >= 2 {
+			prices[i] = pair[1]
+		}
 	}
 	
 	// Cache the result
@@ -151,29 +180,37 @@ func fetchPricesWithTimeframe(symbol string, days string) ([]float64, error) {
 
 // CoinStats represents market statistics for a cryptocurrency
 type CoinStats struct {
-	MarketCap          float64 `json:"market_cap"`
-	Volume24h          float64 `json:"volume_24h"`
-	CirculatingSupply  float64 `json:"circulating_supply"`
-	TotalSupply        float64 `json:"total_supply"`
-	AllTimeHigh        float64 `json:"ath"`
-	AllTimeHighDate    string  `json:"ath_date"`
+	MarketCap         float64 `json:"market_cap"`
+	Volume24h         float64 `json:"volume_24h"`
+	CirculatingSupply float64 `json:"circulating_supply"`
+	TotalSupply       float64 `json:"total_supply"`
+	AllTimeHigh       float64 `json:"ath"`
+	AllTimeHighDate   string  `json:"ath_date"`
 	PriceChangePercent struct {
-		Day     float64 `json:"day"`
-		Week    float64 `json:"week"`
-		Month   float64 `json:"month"`
-		Year    float64 `json:"year"`
+		Day   float64 `json:"day"`
+		Week  float64 `json:"week"`
+		Month float64 `json:"month"`
+		Year  float64 `json:"year"`
 	} `json:"price_change_percent"`
 }
 
 // fetchCoinStats gets market statistics for a coin
 func fetchCoinStats(symbol string) (*CoinStats, error) {
 	// Check cache first
-	cacheKey := symbol + "_stats"
-	if cachedData, found := priceCache.Get(cacheKey); found {
-		return cachedData.(*CoinStats), nil
+	cacheKey := fmt.Sprintf("stats_%s", symbol)
+	if cached, found := priceCache.Get(cacheKey); found {
+		return cached.(*CoinStats), nil
 	}
 	
-	url := fmt.Sprintf("https://api.coingecko.com/api/v3/coins/%s?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false", symbol)
+	// Normalize symbol for CoinGecko API
+	symbol = strings.ToLower(symbol)
+	
+	// Fetch from CoinGecko
+	url := fmt.Sprintf(
+		"https://api.coingecko.com/api/v3/coins/%s?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false",
+		symbol,
+	)
+	
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -181,7 +218,31 @@ func fetchCoinStats(symbol string) (*CoinStats, error) {
 	defer resp.Body.Close()
 	
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bad status: %s", resp.Status)
+		return nil, fmt.Errorf("API error: %s", resp.Status)
+	}
+	
+	// Parse response
+	var data struct {
+		MarketData struct {
+			MarketCap struct {
+				USD float64 `json:"usd"`
+			} `json:"market_cap"`
+			TotalVolume struct {
+				USD float64 `json:"usd"`
+			} `json:"total_volume"`
+			CirculatingSupply float64 `json:"circulating_supply"`
+			TotalSupply      float64 `json:"total_supply"`
+			ATH struct {
+				USD float64 `json:"usd"`
+			} `json:"ath"`
+			ATHDate struct {
+				USD string `json:"usd"`
+			} `json:"ath_date"`
+			PriceChangePercentage24h float64 `json:"price_change_percentage_24h"`
+			PriceChangePercentage7d  float64 `json:"price_change_percentage_7d"`
+			PriceChangePercentage30d float64 `json:"price_change_percentage_30d"`
+			PriceChangePercentage1y  float64 `json:"price_change_percentage_1y"`
+		} `json:"market_data"`
 	}
 	
 	body, err := ioutil.ReadAll(resp.Body)
@@ -189,74 +250,25 @@ func fetchCoinStats(symbol string) (*CoinStats, error) {
 		return nil, err
 	}
 	
-	// Parse the response
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	err = json.Unmarshal(body, &data)
+	if err != nil {
 		return nil, err
 	}
 	
-	// Extract the required data
-	marketData, ok := result["market_data"].(map[string]interface{})
-	if !ok {
-		return nil, errors.New("missing market data")
+	// Map to our stats structure
+	stats := &CoinStats{
+		MarketCap:         data.MarketData.MarketCap.USD,
+		Volume24h:         data.MarketData.TotalVolume.USD,
+		CirculatingSupply: data.MarketData.CirculatingSupply,
+		TotalSupply:       data.MarketData.TotalSupply,
+		AllTimeHigh:       data.MarketData.ATH.USD,
+		AllTimeHighDate:   data.MarketData.ATHDate.USD,
 	}
 	
-	stats := &CoinStats{}
-	
-	// Get market cap
-	if marketCap, ok := marketData["market_cap"].(map[string]interface{}); ok {
-		if marketCapUsd, ok := marketCap["usd"].(float64); ok {
-			stats.MarketCap = marketCapUsd
-		}
-	}
-	
-	// Get 24h volume
-	if volumeData, ok := marketData["total_volume"].(map[string]interface{}); ok {
-		if volumeUsd, ok := volumeData["usd"].(float64); ok {
-			stats.Volume24h = volumeUsd
-		}
-	}
-	
-	// Get circulating supply
-	if circulatingSupply, ok := marketData["circulating_supply"].(float64); ok {
-		stats.CirculatingSupply = circulatingSupply
-	}
-	
-	// Get total supply
-	if totalSupply, ok := marketData["total_supply"].(float64); ok {
-		stats.TotalSupply = totalSupply
-	}
-	
-	// Get ATH
-	if ath, ok := marketData["ath"].(map[string]interface{}); ok {
-		if athUsd, ok := ath["usd"].(float64); ok {
-			stats.AllTimeHigh = athUsd
-		}
-	}
-	
-	// Get ATH date
-	if athDate, ok := marketData["ath_date"].(map[string]interface{}); ok {
-		if athDateUsd, ok := athDate["usd"].(string); ok {
-			stats.AllTimeHighDate = athDateUsd
-		}
-	}
-	
-	// Get price change percentages
-	if priceChange, ok := marketData["price_change_percentage_24h"].(float64); ok {
-		stats.PriceChangePercent.Day = priceChange
-	}
-	
-	if priceChange, ok := marketData["price_change_percentage_7d"].(float64); ok {
-		stats.PriceChangePercent.Week = priceChange
-	}
-	
-	if priceChange, ok := marketData["price_change_percentage_30d"].(float64); ok {
-		stats.PriceChangePercent.Month = priceChange
-	}
-	
-	if priceChange, ok := marketData["price_change_percentage_1y"].(float64); ok {
-		stats.PriceChangePercent.Year = priceChange
-	}
+	stats.PriceChangePercent.Day = data.MarketData.PriceChangePercentage24h
+	stats.PriceChangePercent.Week = data.MarketData.PriceChangePercentage7d
+	stats.PriceChangePercent.Month = data.MarketData.PriceChangePercentage30d
+	stats.PriceChangePercent.Year = data.MarketData.PriceChangePercentage1y
 	
 	// Cache the result
 	priceCache.Set(cacheKey, stats, cacheExpiration)
