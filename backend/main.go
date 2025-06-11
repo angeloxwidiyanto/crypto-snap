@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Default crypto coins to use
@@ -220,24 +219,4 @@ func getCoinSymbol(id string) string {
 		return symbol
 	}
 	return strings.ToUpper(id)
-}
-
-func FetchAndRenderChart(symbol string) ([]byte, error) {
-	// Implement FetchAndRenderChart function
-	return []byte{}, nil
-}
-
-func fetchPrices(symbol string) ([]float64, error) {
-	// Implement fetchPrices function
-	return []float64{}, nil
-}
-
-func fetchPricesWithTimeframe(symbol string, timeframe string) ([]float64, error) {
-	// Implement fetchPricesWithTimeframe function
-	return []float64{}, nil
-}
-
-func fetchCoinStats(symbol string) (interface{}, error) {
-	// Implement fetchCoinStats function
-	return nil, nil
 }
