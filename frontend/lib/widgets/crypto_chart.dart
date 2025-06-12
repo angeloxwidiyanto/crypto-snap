@@ -146,8 +146,8 @@ class _CryptoChartState extends State<CryptoChart> {
           ),
           handleBuiltInTouches: true,
           getTouchLineEnd: (_, __) => double.infinity,
-          getTouchedSpotIndicator: (_, spots) {
-            return spots.map((LineBarSpot spot) {
+          getTouchedSpotIndicator: (LineChartBarData barData, List<int> spotIndexes) {
+            return spotIndexes.map((spotIndex) {
               return TouchedSpotIndicatorData(
                 FlLine(
                   color: isDarkMode ? Colors.white.withOpacity(0.2) : Colors.black.withOpacity(0.2),

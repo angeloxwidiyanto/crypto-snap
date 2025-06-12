@@ -2,6 +2,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:fl_chart/fl_chart.dart';
+import 'package:provider/provider.dart';
+import 'services/crypto_service.dart';
+import 'theme/app_theme.dart';
+import 'screens/home_screen.dart';
 
 void main() {
   runApp(const CryptoSnapApp());
@@ -12,10 +16,16 @@ class CryptoSnapApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Crypto Snap',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const ChartPage(symbol: 'bitcoin'),
+    return ChangeNotifierProvider(
+      create: (context) => CryptoService(),
+      child: MaterialApp(
+        title: 'Crypto Snap',
+        theme: AppTheme.lightTheme,
+        darkTheme: AppTheme.darkTheme,
+        themeMode: ThemeMode.system,
+        home: const HomeScreen(),
+        debugShowCheckedModeBanner: false,
+      ),
     );
   }
 }

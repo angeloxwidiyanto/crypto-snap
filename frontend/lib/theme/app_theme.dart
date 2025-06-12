@@ -38,6 +38,11 @@ class AppTheme {
     fontWeight: FontWeight.bold,
   );
   
+  static TextStyle get titleLarge => GoogleFonts.inter(
+    fontSize: 16,
+    fontWeight: FontWeight.bold,
+  );
+  
   static TextStyle get bodyLarge => GoogleFonts.inter(
     fontSize: 16,
     fontWeight: FontWeight.normal,
@@ -65,13 +70,6 @@ class AppTheme {
         surface: lightSurfaceColor,
       ),
       scaffoldBackgroundColor: lightBackgroundColor,
-      cardTheme: CardTheme(
-        color: lightCardColor,
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-      ),
       appBarTheme: AppBarTheme(
         backgroundColor: lightSurfaceColor,
         elevation: 0,
@@ -82,6 +80,7 @@ class AppTheme {
         headlineLarge: headlineLarge.copyWith(color: lightTextColor),
         headlineMedium: headlineMedium.copyWith(color: lightTextColor),
         headlineSmall: headlineSmall.copyWith(color: lightTextColor),
+        titleLarge: titleLarge.copyWith(color: lightTextColor),
         bodyLarge: bodyLarge.copyWith(color: lightTextColor),
         bodyMedium: bodyMedium.copyWith(color: lightTextColor),
         bodySmall: bodySmall.copyWith(color: lightTextColor),
@@ -135,13 +134,6 @@ class AppTheme {
         surface: darkSurfaceColor,
       ),
       scaffoldBackgroundColor: darkBackgroundColor,
-      cardTheme: CardTheme(
-        color: darkCardColor,
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-      ),
       appBarTheme: AppBarTheme(
         backgroundColor: darkSurfaceColor,
         elevation: 0,
@@ -152,6 +144,7 @@ class AppTheme {
         headlineLarge: headlineLarge.copyWith(color: darkTextColor),
         headlineMedium: headlineMedium.copyWith(color: darkTextColor),
         headlineSmall: headlineSmall.copyWith(color: darkTextColor),
+        titleLarge: titleLarge.copyWith(color: darkTextColor),
         bodyLarge: bodyLarge.copyWith(color: darkTextColor),
         bodyMedium: bodyMedium.copyWith(color: darkTextColor),
         bodySmall: bodySmall.copyWith(color: darkTextColor),
